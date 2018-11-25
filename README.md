@@ -16,7 +16,7 @@ Which was one of the reasons I increased the tape size to 65536, the maximum val
 
 If there is a consecutive series of `+` or `-`, we can calculate the summed delta of the series (`+` being 1 and `-` being -1), and add that to the value in tape instead. So a chain of `+++-`, instead of becoming,
 
-```
+```asm
 incb (%rcx,%rdi,1)
 incb (%rcx,%rdi,1)
 incb (%rcx,%rdi,1)
@@ -25,7 +25,7 @@ decb (%rcx,%rdi,1)
 
 it would become,
 
-```
+```asm
 addb $0x2, (%rcx, %rdi,1)
 ```
 
@@ -33,7 +33,7 @@ addb $0x2, (%rcx, %rdi,1)
 
 Similarly, if there is a consecutive series of `>` or `<`, we can calculate the summed delta and add that to the tape position. Instead of `>>>` becoming
 
-```
+```asm
 inc %cx
 inc %cx
 inc %cx
@@ -41,7 +41,7 @@ inc %cx
 
 it would become,
 
-```
+```asm
 add $0x3, %cx
 ```
 
@@ -49,7 +49,7 @@ add $0x3, %cx
 
 If there is a series of bf commands containing only `+`, `-`, `>`, `<`, we can keep track of pointer movements and add them in one shot once there is a `[`, `]`, `.` or `,` command. So from `>+++>` instead of becoming,
 
-```
+```asm
 inc %cx
 addb $0x3, (%rcx, %rdi, 1)
 inc %cx
@@ -57,7 +57,7 @@ inc %cx
 
 would become
 
-```
+```asm
 addb $0x3, 0x1(%rcx, %rdi, 1)
 addb $0x3, %cx
 ```
@@ -68,19 +68,19 @@ Postponing movements are implemented in `bfjit-64k-postpone.c`, however it is ve
 
 If there is a series of `[-]`, we simply just clear the value in that location in tape:
 
-```
+```asm
 movb $0x0, (%rcx, %rdi, 1)
 ```
 
 If there is a series of `+` or `-` following it, instead of clearing, we set the value to the summed delta, so `[-]+++` becomes
 
-```
+```asm
 movb $0x3, (%rcx, %rdi, 1)
 ```
 
 Several programs chain clear loops, we can make these chained clears faster by bitmasking the 64-bit value starting from the current position in tape with a calculated mask. So `[-]>[-]>[-]` becomes
 
-```
+```asm
 mov $0x0, (%rcx, %rdi, 1)
 and $0xffff0000, (%rcx, %rdi, 1)
 ```
