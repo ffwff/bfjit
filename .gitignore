@@ -1,6 +1,7 @@
 *
 !*.*
 !*/
+!Makefile
 bfoptimization
 awib
 *.b
