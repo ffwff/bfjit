@@ -14,10 +14,6 @@
 #define B3(x) ((x>>16)&0xFF)
 #define B4(x) ((x>>24)&0xFF)
 
-// breakpoint
-asm("bp: nop; retq");
-void bp(); // noop
-
 struct addr_node {
     unsigned int pos; // position in source space
     uint64_t addr; // addr in "assembly" space
@@ -27,15 +23,15 @@ struct addr_node {
 struct addr_node *addr_node_first = NULL, *addr_node_last = NULL;
 
 // tape
-#define TAPE_SIZE 0xFFFF
+#define TAPE_SIZE 0xffff
 uint8_t tape[TAPE_SIZE];
 
-static inline void init_tape() {
+void init_tape() {
     memset(tape, 0, TAPE_SIZE);
 }
 
 // file
-#define is_legal_char(ch) (ch == '+' || ch == '-' || ch == '<' || ch == '>' || ch == '[' || ch == ']' || ch == '.' || ch == ',')
+#define is_legal_char(ch) (ch == '+' || ch == '-' || ch == '<' || ch == '>' || ch == '[' || ch == ']' || ch == '.' || ch == ',' || ch == '#')
 char *read_file(FILE *f) {
     char buf[128];
     char *str = malloc(sizeof(buf)+1);
@@ -143,8 +139,26 @@ void jit_fill_placeholders(char *str) {
 }
 
 #define jit_append_buf(...) \
-    { char buf[] = { __VA_ARGS__ }; \
-    jit_append(buf, sizeof(buf)); }
+do{ char buf[] = { __VA_ARGS__ }; \
+    jit_append(buf, sizeof(buf)); } while(0)
+
+static inline void jit_append_variable_length_addr(int n) {
+    // i didn't want to do this
+    // but goddamn intel and their variable length instructions!!!
+    // why isnt x86 a simple architecture??
+    uint16_t a = B1(n), b = B2(n);
+    if(n < 0) {
+        //printf("%x\n", n);
+        n = -n;
+        if(n < 0xff) {
+            jit_append_buf(0xff-n+1);
+        } else {
+            jit_append_buf(0xff-a,0xff-b,0xff,0xff);
+        }
+    } else {
+        jit_append_buf(a,b,0x00,0x00);
+    }
+}
 
 // addr vector
 struct addr_node *addr_node_create(unsigned int pos, uint64_t addr, uint64_t placeholder_addr) {
@@ -164,6 +178,10 @@ void addr_node_append(unsigned int pos, uint64_t addr, uint64_t placeholder_addr
         addr_node_last = addr_node;
     }
 }
+
+// breakpoint
+asm("bp: nop; retq");
+void bp(); // noop
 
 int main(int argc, char **argv) {
     init_tape();
@@ -190,6 +208,7 @@ int main(int argc, char **argv) {
     
     jit_append_buf(0x48, 0x31, 0xc9); // xor %rcx, %rcx
     
+    int postpone_ptr = 0; // relative
     unsigned int i = 0;
     char c;
     if((c = str[i]) == '[') {
@@ -208,6 +227,27 @@ int main(int argc, char **argv) {
         // http://calmerthanyouare.org/2015/01/07/optimizing-brainfuck.html
         //printf("C: %c\n",c);
         char next_ch = str[i+1], next_ch1 = next_ch ? str[i+2] : 0;
+        
+        // BUG: somehow rdi = 0
+        // sar    $0xff,%edi
+        // FIXME: B1,B2 not work for negative
+
+#define flush_ptr() if(postpone_ptr!=0){ \
+        uint16_t sign = (postpone_ptr<0?0xe9:0xc1); \
+        postpone_ptr = (postpone_ptr<0?-postpone_ptr:postpone_ptr); \
+        jit_append_buf(0x66, 0x81, sign, B1(postpone_ptr), B2(postpone_ptr)); /* addw $postpone_ptr, %cx */ \
+        postpone_ptr = 0; \
+}
+
+        //printf("C:%c\n",c);
+        if(c=='#') {
+            //flush_ptr();
+            jit_append_buf(0x90);
+            /*#ifdef DEBUG
+            jit_append_buf(0x48, 0x89, 0xc8); //mov    %rcx,%rax
+            #endif
+            jit_append_buf(0xc3);*/
+        }
 
 #ifdef OPTIMIZE
         // fusing incs/decs
@@ -220,29 +260,59 @@ int main(int argc, char **argv) {
                 i++;
             }
             if(value_delta == 0) continue;
-            jit_append_buf(0x80, 0x04, 0x39, value_delta); // addb $delta, (%rcx,%rdi,1)
+            if(postpone_ptr) {
+                jit_append_buf(0x80, postpone_ptr<0?0x44:0x84, 0x39);
+                jit_append_variable_length_addr(postpone_ptr);
+                jit_append_buf(value_delta); // addb $delta, (%rcx,%rdi,1)
+            } else
+                jit_append_buf(0x80, 0x04, 0x39, value_delta); // addb $delta, (%rcx,%rdi,1)
             
             continue;
         }
         
         // fusing ptr movement
         if((c == '>' || c == '<') && (next_ch == '>' || next_ch == '<')) {
-            uint64_t delta = 0;
             while((c = str[i])) {
-                if(c == '>') delta++;
-                else if(c == '<') delta--;
+                if(c == '>') postpone_ptr++;
+                else if(c == '<') postpone_ptr--;
                 else break;
                 i++;
             }
-            if(delta == 0) continue;
-            jit_append_buf(0x66, 0x81, 0xc1, B1(delta), B2(delta)); // addw [number], %cx
-            
             continue;
         }
         
         // clear loops
-        if(c == '[' && next_ch == '-' && next_ch1 == ']') {
+        if(c == '[' && next_ch == '-' && next_ch1 == ']' && 0) {
             i += 3;
+            c = str[i];
+            uint8_t value_delta = 0;
+            while((c = str[i])) {
+                if(c == '+') value_delta++;
+                else if(c == '-') value_delta--;
+                else break;
+                i++;
+            }
+            flush_ptr();
+            jit_append_buf(0xc6, 0x04, 0x39, value_delta);
+            /*
+            if(postpone_ptr) {
+                int tmp = 0;
+                if(postpone_ptr > 0 && postpone_ptr<0xff) tmp = 0x44;
+                else if(postpone_ptr < 0 && (-postpone_ptr)>0xff) tmp = 0x44;
+                else tmp = 0x84;
+                jit_append_buf(0xc6, tmp, 0x39);
+                if(postpone_ptr < 0 && (-postpone_ptr)>0xff) {
+                    printf("%d", postpone_ptr);
+                    jit_append_buf(0xff-postpone_ptr+1);
+                }
+                else if(postpone_ptr < 0xff)
+                    jit_append_buf(postpone_ptr);
+                else
+                    jit_append_variable_length_addr(postpone_ptr);
+                jit_append_buf(value_delta); // movb $0x0, $...(%rsi,%rdi,1)
+            } else
+                jit_append_buf(0xc6, 0x04, 0x39, value_delta); // movb $0x0, (%rsi,%rdi,1)
+            */
             
             // chained clear loops
             if(str[i] == '>' && str[i+1] == '[' && str[i+2] == '-' && str[i+3] == ']') { // forwards
@@ -260,10 +330,21 @@ int main(int argc, char **argv) {
                     } else break;
                 }
                 //printf("0x%08x\n", arg);
-                jit_append_buf(0x81,0x24,0x39,B4(arg),B3(arg),B2(arg),B1(arg)); // andl $arg,(%rcx,%rdi,1)
-                jit_append_buf(0x66, 0x83, 0xc1, j); // add    $j,%cx
+                if(postpone_ptr) {
+                    uint16_t b2;
+                    uint64_t tmp = (uint64_t)postpone_ptr;
+                    if(tmp < 0xff) b2 = 0x64;
+                    else b2 = 0xa4;
+                    jit_append_buf(0x81, 0xa4, 0x39);
+                    jit_append_variable_length_addr(postpone_ptr);
+                    jit_append_buf(B4(arg),B3(arg),B2(arg),B1(arg));
+                    postpone_ptr += j;
+                } else {
+                    jit_append_buf(0x81,0x24,0x39,B4(arg),B3(arg),B2(arg),B1(arg)); // andl $arg,(%rcx,%rdi,1)
+                    jit_append_buf(0x66, 0x83, 0xc1, j); // add    $j,%cx
+                }
                 continue;
-            } else if(str[i] == '<' && str[i+1] == '[' && str[i+2] == '-' && str[i+3] == ']') { // backwards
+            } else if(str[i] == '<' && str[i+1] == '[' && str[i+2] == '-' && str[i+3] == ']' && 0) { // backwards
                 int j = 0;
                 uint64_t arg = 0xffffff00;
                 // 1: arg=0xffffff00
@@ -283,27 +364,30 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            c = str[i];
-            uint8_t value_delta = 0;
-            while((c = str[i])) {
-                if(c == '+') value_delta++;
-                else if(c == '-') value_delta--;
-                else break;
-                i++;
-            }
-            jit_append_buf(0xc6, 0x04, 0x39, value_delta); // movb $0x0, (%rsi,%rdi,1)
             continue;
         }
 #endif
         
         if(c == '>') {
-            jit_append_buf(0x66, 0xff, 0xc1); // incw %cx
+            postpone_ptr++;
         } else if(c == '<') {
-            jit_append_buf(0x66, 0xff, 0xc9); // decw %cx
+            postpone_ptr--;
         } else if(c == '+') {
-            jit_append_buf(0xfe, 0x04, 0x39); // incb (%rcx,%rdi,1)
+            if(postpone_ptr) {
+                jit_append_buf(0xfe, postpone_ptr<0?0x44:0x84, 0x39); //incb   0x1337(%rcx,%rdi,1)
+                jit_append_variable_length_addr(postpone_ptr);
+            } else
+                jit_append_buf(0xfe, 0x04, 0x39); // incb (%rcx,%rdi,1)
         } else if(c == '-') {
-            jit_append_buf(0xfe, 0x0c, 0x39); // decb (%rcx,%rdi,1)
+            //fe 8c 39 c9 ec ff ff    decb   -0x1337(%rcx,%rdi,1)
+            if(postpone_ptr) {
+                jit_append_buf(0xfe, postpone_ptr<0?0x4c:0x8c, 0x39); //decb 0x1337(%rcx,%rdi,1)
+#ifdef DEBUG
+                printf("postpone %d\n",postpone_ptr); // somehow, if postpone_ptr < -1 then prints out 0x0
+#endif
+                jit_append_variable_length_addr(postpone_ptr);
+            } else
+                jit_append_buf(0xfe, 0x0c, 0x39); // decb (%rcx,%rdi,1)
         } else if(c == '.') {
             /*    111d:       48 c7 c0 01 00 00 00    mov    $0x1,%rax
              *    1124:       48 89 fb                mov    %rdi,%rbx
@@ -317,6 +401,7 @@ int main(int argc, char **argv) {
              *    113f:       48 89 df                mov    %rbx,%rdi
              * 
              */
+            flush_ptr();
             jit_append_buf(
                 0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00,
                 0x48, 0x89, 0xfb,
@@ -342,6 +427,7 @@ int main(int argc, char **argv) {
              *    113f:       48 89 df                mov    %rbx,%rdi
              * 
              */
+            flush_ptr();
             jit_append_buf(
                 0x48, 0x31, 0xc0,
                 0x48, 0x89, 0xfb,
@@ -355,6 +441,8 @@ int main(int argc, char **argv) {
                 0x48, 0x89, 0xdf
             );
         } else if (c=='[') { // start while loop
+            flush_ptr();
+            
             // empty while loop
             if(next_ch == ']') {
                 /*
@@ -420,7 +508,7 @@ int main(int argc, char **argv) {
                         // *(tape+ptr+rela_ptr) = value_delta*rela_ptr
                         jit_append_buf(0xb0, value_delta); // movb $value_delta,%al
                         //jit_append_buf(0xb3, rela_ptr+1); // movb $rela_ptr,%bl
-                        jit_append_buf(0x8a,0x1c,0x39) //mov    (%rcx,%rdi,1),%bl
+                        jit_append_buf(0x8a,0x1c,0x39); //mov    (%rcx,%rdi,1),%bl
                         jit_append_buf(0xf6, 0xe3); // mul %bl
                         
                         jit_append_buf(0x48, 0x89, 0xcb); // mov %rcx, %rbx
@@ -447,6 +535,7 @@ int main(int argc, char **argv) {
             // [condition] is where the matching ']' is in asm space
             addr_node_append(i, addr, placeholder);
         } else if (c==']') { // end while loop
+            flush_ptr();
             // while loop jump condition: *ptr != 0
             uint64_t addr = _bfjit_mem_ptr;
             jit_append_buf(0x8a, 0x04, 0x39, // mov (%rcx,%rdi,1),%al
@@ -458,6 +547,7 @@ int main(int argc, char **argv) {
         }
         i++;
     }
+    flush_ptr();
 
 #ifdef DEBUG
     jit_append_buf(0x48, 0x89, 0xc8); //mov    %rcx,%rax
