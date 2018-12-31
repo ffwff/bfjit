@@ -97,6 +97,6 @@ If the loop body has no subloops and no input/output, all the movements add up t
 
 ### References
 
-* [https://www.nayuki.io/page/optimizing-brainfuck-compiler](Optimizing brainfuck compiler)
-* [http://www.wilfred.me.uk/blog/2015/08/29/an-optimising-bf-compiler/](An optimising brainfuck compiler)
-* [http://calmerthanyouare.org/2015/01/07/optimizing-brainfuck.html](Optimzing brainfuck)
+* [Optimizing brainfuck compiler](https://www.nayuki.io/page/optimizing-brainfuck-compiler)
+* [An optimising brainfuck compiler](http://www.wilfred.me.uk/blog/2015/08/29/an-optimising-bf-compiler/)
+* [Optimzing brainfuck](http://calmerthanyouare.org/2015/01/07/optimizing-brainfuck.html)
