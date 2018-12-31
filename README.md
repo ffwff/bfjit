@@ -95,3 +95,8 @@ If the loop body has no subloops and no input/output, all the movements add up t
 * Although the interpreter allows the tape pointer to be wrapped around, one can easily place a "simple loop" or chained clear loops to overflow the buffer, This can be fixed by doing proper bounds checking (which would defeat the point of these optimizations) or using [funky memory maps](https://nullprogram.com/blog/2016/04/10/) and limiting optimization pointer movements.
 * This interpreter doesn't use an IR to translate, it directly translates bf to x86-64 opcodes. Using an IR would tremendously help development time and open up to new architecture possibilites. However, i'm too lazy.
 
+### References
+
+* [https://www.nayuki.io/page/optimizing-brainfuck-compiler](Optimizing brainfuck compiler)
+* [http://www.wilfred.me.uk/blog/2015/08/29/an-optimising-bf-compiler/](An optimising brainfuck compiler)
+* [http://calmerthanyouare.org/2015/01/07/optimizing-brainfuck.html](Optimzing brainfuck)
